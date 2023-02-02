@@ -5,6 +5,8 @@ An convenience wrapper that allows you to use Windows' File Search functionality
 ## Usage
 Basic example
 ```
+    from pywin_query import WinQuery
+
     q = WinQuery("C:/path/to/directory")
 
     files_with_foo = q.query("foo")
@@ -16,6 +18,8 @@ Basic example
 For different values from each search result, custom headers can be used that can be found on https://msdn.microsoft.com/en-us/library/windows/desktop/bb419046(v=vs.85).aspx
 
 ```
+    from pywin_query import WinQuery
+
     q = WinQuery("C:/path/to/directory", ["System.ItemName"])
 ```
 
