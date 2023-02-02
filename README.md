@@ -18,3 +18,5 @@ For different values from each search result, custom headers can be used that ca
 ```
     q = WinQuery("C:/path/to/directory", ["System.ItemName"])
 ```
+
+For any improvements or changes, feel free to open a pull request or issue.
