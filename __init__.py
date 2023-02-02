@@ -1,9 +1,9 @@
-from typing import List, Set
+from typing import Dict, List, Union
 
 import pywintypes
 from win32com.client import CDispatch, Dispatch
 
-BASE_QUERY = "SELECT {', '.join(self.headers)} FROM SystemIndex WHERE SCOPE='file:{directory_path}'"
+BASE_QUERY = "SELECT {headers} FROM SystemIndex WHERE SCOPE='file:{directory_path}'"
 
 
 class WinQuery:
@@ -13,38 +13,41 @@ class WinQuery:
     """
 
     def __init__(
-        self, directory_path: str, search_terms: List[str], requested_exts: Set[str], headers: List[str]
-    ):
-
-        #TODO: Check all the parameters are of the right type
-        #TODO: Allow customer headers to be passed
-        #TODO: Attempt to multi-thread the query running
-
-        # https://msdn.microsoft.com/en-us/library/windows/desktop/bb419046(v=vs.85).aspx
-        self.headers = [
-            "System.ItemName",  # Name of file
+        self,
+        directory_path: str,
+        headers: List[str] = [
             "System.ItemPathDisplay",  # Absolute path of file
-            "System.ItemFolderPathDisplay",  # Directory path of file
-            "System.FileExtension",  # File extension
-        ]
-
-        self.search_terms = search_terms
-        self.requested_exts = requested_exts
-        self.queries = []
+        ],
+    ):
         self.directory_path = directory_path
-        self._construct_queries()
+        assert isinstance(self.directory_path, str)
 
-    def _construct_queries(self):
-        """
-        Construct a query for each of the search terms.
-        Multiple queries are used so results can be assigned to a term
-        """
-        self.queries = []
-        for term in self.search_terms:
-            q = BASE_QUERY.format(", ".join(self.headers), self.directory_path) + f" and CONTAINS('{term}')"
-            self.queries.append((term, q))
+        # More headers, such as file extentions and dirextory paths, can be found at the link below
+        # https://msdn.microsoft.com/en-us/library/windows/desktop/bb419046(v=vs.85).aspx
+        self.headers = headers
+        assert isinstance(self.headers, list)
+
+    def _construct_query(self, search_term: Union[str, List[str]]) -> str:
+        """Construct a query for a given search term(s)."""
+        base_query = BASE_QUERY.format(
+            headers=", ".join(self.headers), directory_path=self.directory_path
+        )
+
+        if isinstance(search_term, str):
+            return base_query + f" and CONTAINS('{search_term}')"
+        else:
+            q = base_query + f" and ("
+            for index, value in enumerate(search_term):
+                q += f"CONTAINS('{value}')"
+                if index == len(search_term) - 1:
+                    q += ")"
+                    break
+                q += " or "
+        return q
 
     def _get_connection(self) -> CDispatch:
+        """Get connection to Windows Internal Database."""
+
         # Establish connection
         conn = Dispatch("ADODB.Connection")
         connstr = (
@@ -52,90 +55,53 @@ class WinQuery:
         )
         conn.Open(connstr)
         conn.CommandTimeout = 0  # remove timeout for searching
+        return conn
 
-
-    def query(self, query, conn):
+    def exc_query(self, query_string, conn):
+        """Execute a single query."""
         results = []
 
         record_set = Dispatch("ADODB.Recordset")
 
         try:
-            record_set.Open(query, conn)
+            record_set.Open(query_string, conn)
         except Exception as e:
-            raise RuntimeError(f"Failed to open query \n\t{query}\n\t: {e}")
+            raise RuntimeError(f"Failed to open query \n\t{query_string}\n\t: {e}")
 
         while not record_set.EOF:
+
+            if len(self.headers) == 0:
+                raise ValueError("No headers provided")
+
+            cur_res = []
+
+            for h in self.headers:
+                try:
+                    cur_res.append(record_set.Fields.Item(h).Value)
+                except Exception as e:
+                    raise ValueError("Headers {h} does not exist on record set.")
+
             record_set.MoveNext()
-            results.append(record_set.Fields)
+
+            cur_res = cur_res[0] if len(cur_res) == 1 else cur_res
+            results.append(cur_res)
 
         record_set.Close()
         return results
 
+    def query(
+        self, search_terms: Union[str, List[str]]
+    ) -> Union[List[str], Dict[str, List[str]]]:
+        """Execute a query for term(s)."""
 
-    def execute(self) -> List[List[str]]:
+        if not isinstance(search_terms, (str, list)):
+            raise TypeError("Search terms must be a string for list of strings.")
 
-        results = []
-        files_found = set()
+        if isinstance(search_terms, list):
+            for st in search_terms:
+                if not isinstance(st, str):
+                    raise TypeError("All values in search terms must be strings.")
 
+        q = self._construct_query(search_terms)
         conn = self._get_connection()
-
-        for term, query in self.queries:
-            record_set = Dispatch("ADODB.Recordset")
-
-            try:
-                record_set.Open(query, conn)
-            except Exception as e:
-                raise RuntimeError(f"Failed to open query \n\t{query}\n\t: {e}")
-
-            try:
-                record_set.MoveFirst()
-            except:
-                # If recored set is EoF then no results were found and can continue
-                # If it it is not then the query failed and all queries be cancelled
-                if record_set.EOF:
-                    record_set.Close()
-                    record_set = None
-                    continue
-                else:
-                    record_set.Close()
-                    record_set = None
-                    raise RuntimeError(f"Failed to move first in query \n\t{query}\n\t: {e}")
-
-            while not record_set.EOF:
-                abs_path = record_set.Fields.Item("System.ItemPathDisplay").Value
-
-                if abs_path in files_found:
-                    try:
-                        record_set.MoveNext()
-                    except pywintypes.com_error as e:
-                        logger.error(
-                            f"Failed to move next in query \n\t{query}\n\t: {e}"
-                        )
-                    continue
-                else:
-                    files_found.add(
-                        abs_path,
-                    )
-
-                if (
-                    record_set.Fields.Item("System.FileExtension").Value
-                    in self.requested_exts
-                ):
-                    result_entry = [
-                        term,
-                        record_set.Fields.Item("System.ItemFolderPathDisplay").Value,
-                        record_set.Fields.Item("System.ItemName").Value,
-                    ]
-
-                    results.append(result_entry)
-
-                try:
-                    record_set.MoveNext()
-                except pywintypes.com_error as e:
-                    logger.error(f"Failed to move next in query \n\t{query}\n\t: {e}")
-
-            record_set.Close()
-            record_set = None
-        conn.Close()
-        conn = None
-        return results
+        return self.exc_query(q, conn)
