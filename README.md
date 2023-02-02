@@ -1,6 +1,11 @@
 # pywin-query
 An convenience wrapper that allows you to use Windows' File Search functionality.
 
+## Installation
+
+```
+pip install pywin-query
+```
 
 ## Usage
 Basic example
